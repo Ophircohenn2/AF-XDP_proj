@@ -1,0 +1,3 @@
+# Generated config
+HAVE_TC_LIBBPF:=y
+BPF_CFLAGS += -DHAVE_TC_LIBBPF
