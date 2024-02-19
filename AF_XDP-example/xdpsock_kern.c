@@ -7,11 +7,11 @@
  * If you do not use these modes, libbpf can supply an XDP program for you.
  */
 
-// #define odbpf_vdebug(fmt, args...)                                                       \
-// 	({                                                                                   \
-// 		char ____fmt[] = fmt;                                                            \
-// 		bpf_trace_printk(____fmt, sizeof(____fmt), ##args);                              \
-// 	})
+#define odbpf_vdebug(fmt, args...)                                                       \
+	({                                                                                   \
+		char ____fmt[] = fmt;                                                            \
+		bpf_trace_printk(____fmt, sizeof(____fmt), ##args);                              \
+	})
 
 struct {
 	__uint(type, BPF_MAP_TYPE_XSKMAP);
@@ -43,8 +43,11 @@ int xdp_sock_prog(struct xdp_md *ctx)
 
     /* A set entry here means that the correspnding queue_id
      * has an active AF_XDP socket bound to it. */
-   if (bpf_map_lookup_elem(&xsks_map, &index) == NULL)
+   if (bpf_map_lookup_elem(&xsks_map, &index) == NULL){
+
        return XDP_PASS;
+   }
+
    return bpf_redirect_map(&xsks_map, index, 0);
 
 }

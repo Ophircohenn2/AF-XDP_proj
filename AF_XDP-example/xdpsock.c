@@ -237,11 +237,12 @@ static const struct sched_map {
 };
 
 struct packet_desc
- {
-	u64 addr;
-	u32 len;
-	u32 option;
-};
+{
+    u64 addr;
+    u32 len;
+    u32 option;
+} __attribute__((aligned(64))); // Align to 64-byte cache line boundary
+
 
 static int num_socks;
 struct xsk_socket_info *xsks[MAX_SOCKS];
@@ -1033,7 +1034,7 @@ XDP_ALWAYS_INLINE  void release_rx(u16 xsk_id, u32 done_packets,
 	xsk_ring_prod__submit(&xsk->umem->fq, rcvd);
 	xsk_ring_cons__release(&xsk->rx, rcvd);
 }
-
+int tx_sum =0;
 XDP_ALWAYS_INLINE int send_tx_array(u32 xsk_idx, struct packet_desc *tx_array, u32 pkt_cnt) {
 
 	u32 packets_done = 0;
@@ -1042,7 +1043,6 @@ XDP_ALWAYS_INLINE int send_tx_array(u32 xsk_idx, struct packet_desc *tx_array, u
 while (packets_done < pkt_cnt) {
 	struct xdp_desc *tx_desc;
 	u32 idx;
-    u32 frame_nb = 0;
 	int nb;
 	u32 len;
     unsigned int i;
@@ -1072,12 +1072,12 @@ while (packets_done < pkt_cnt) {
                 len = 0; // Ensure the loop exits when the entire packet is processed.
             }
             
-            frame_nb = (frame_nb + 1) % NUM_FRAMES;
             i++;
         } while (len > 0); // Ensure we do not exceed the batch size.
     }
+	tx_sum += nb; 
     xsk_ring_prod__submit(&xsk->tx, nb);
-	xsk_ring_cons__release(&xsk->rx, packets_done);
+	xsk_ring_cons__release(&xsk->rx, nb);
     xsk->outstanding_tx += nb;
     // xsk->ring_stats.tx_frags += nb;
 }
@@ -1203,8 +1203,8 @@ swap_mac_addresses(struct packet_desc data,
     // Replace the second integer with the first integer
     *second_int = *first_int;
 
-	compute_udp_checksum(ipv4_hdr, udp_hdr);
-	compute_ip_checksum(ipv4_hdr);
+	// compute_udp_checksum(ipv4_hdr, udp_hdr);
+	// compute_ip_checksum(ipv4_hdr);
 
     return data;
 }

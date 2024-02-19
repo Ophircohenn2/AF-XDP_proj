@@ -77,7 +77,30 @@ void print_packet_desc_array(const struct packet_desc *arr, size_t size) {
 
 #include <time.h> // For nanosleep
 
+void msleep(long milliseconds) {
+    struct timespec req, rem;
+    int wasInterrupted;
 
+    req.tv_sec = milliseconds / 1000;          // Seconds
+    req.tv_nsec = (milliseconds % 1000) * 1000000L; // Nanoseconds
+
+    do {
+        wasInterrupted = 0;
+        if (nanosleep(&req, &rem) == -1) {
+            if (errno == EINTR) {
+                // Sleep was interrupted by a signal, try again with the remaining time.
+                req = rem;
+                wasInterrupted = 1;
+            } else {
+                // An actual error occurred
+                perror("nanosleep");
+            }
+        }
+    } while (wasInterrupted);
+}
+#include <stdio.h>
+#include <time.h>
+int sum_of_pkt =0;
 void work(void* args) {
     int* xsk_id = (int*)args;
     struct packet_desc pkt_desc_array_rx[PKT_ARRAY_SIZE];
@@ -86,6 +109,10 @@ void work(void* args) {
     int i; 
     struct pollfd fds[2];
 	int nfds = 1;
+    struct timespec ts;
+    ts.tv_sec = 0;
+    ts.tv_nsec = 10 * 1; // 500 million nanoseconds
+    
 
         // Define the sizes of the headers
     const size_t eth_header_size = sizeof(struct ether_header); // Ethernet header size
@@ -114,13 +141,18 @@ void work(void* args) {
         for (i = 0; i < pkt_cnt; i++) {
             pkt_desc_array_tx[i] = swap_mac_addresses(pkt_desc_array_rx[i], data_offset);
         }
+        sum_of_pkt += pkt_cnt;
 
-        // Send processed packets
+
+
+    // Call nanosleep
+    if (nanosleep(&ts, NULL) < 0) {
+        perror("nanosleep failed");
+    }
         send_tx_array(*xsk_id, pkt_desc_array_tx, pkt_cnt);
         // dump_app_stats(1000000);
     }
 }
-
 
 int main()
 {    
@@ -151,6 +183,8 @@ int main()
     for(int i=0; i<number_of_sockets; i++){
         pthread_join(threads[i], NULL);
     }
+    printf("\n packet count = %d\n",sum_of_pkt);
+    printf("\n tx sum = %d\n",tx_sum);
 
     final_cleanup();
     return 0;
