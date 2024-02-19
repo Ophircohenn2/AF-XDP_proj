@@ -37,9 +37,7 @@ inline uint16_t checksum(u16 *data, int len) {
 
   return ~sum;
 }
-void answer_ping(void* pkt, u32 len);
 
-#define USER_FUNC answer_ping_V4
 #define PKT_ARRAY_SIZE opt_batch_size
 
 static inline __sum16 csum16_add(__sum16 csum, __be16 addend) {
@@ -56,41 +54,6 @@ static inline __sum16 csum16_sub(__sum16 csum, __be16 addend) {
 static inline void csum_replace2(__sum16 *sum, __be16 old, __be16 new)
 {
 	*sum = ~csum16_add(csum16_sub(~(*sum), old), new);
-}
-
-inline struct packet_desc answer_ping_V4(struct packet_desc pkt_desc){
-    uint8_t tmp_mac[ETH_ALEN];
-    struct ethhdr *eth = (struct ethhdr *) pkt_desc.addr;
-    struct iphdr *ipv4 = (struct iphdr *) (eth + 1);
-    struct icmphdr *icmp = (struct icmphdr *) (ipv4 + 1);
-
-    if (ntohs(eth->h_proto) != ETH_P_IP ||
-        pkt_desc.len < (sizeof(*eth) + sizeof(*ipv4) + sizeof(*icmp)) ||
-        ipv4->protocol != IPPROTO_ICMP ||
-        icmp->type != ICMP_ECHO)
-        return pkt_desc;
-
-    memcpy(tmp_mac, eth->h_dest, ETH_ALEN);
-    memcpy(eth->h_dest, eth->h_source, ETH_ALEN);
-    memcpy(eth->h_source, tmp_mac, ETH_ALEN);
-
-    uint32_t tmp_ip = ipv4->saddr;
-    ipv4->saddr = ipv4->daddr;
-    ipv4->daddr = tmp_ip;
-    // __u32 *data_ptr = (__u32 *)((__u8 *)icmp + sizeof(struct icmphdr));
-    if (pkt_desc.len >= sizeof(struct ethhdr) + sizeof(struct iphdr) + sizeof(struct icmphdr) + 4) {
-            // __u32 *data_ptr = (__u32 *)((__u8 *)icmp + sizeof(struct icmphdr));
-            // (*data_ptr) = htonl(ntohl(*data_ptr) + 1);
-            //icmp->checksum = 0;
-        }
-    
-    icmp->type = ICMP_ECHOREPLY;
-
-    // Recompute the ICMP checksum
-    icmp->checksum = 0;
-    icmp->checksum = htons(checksum((u16*)icmp, pkt_desc.len - sizeof(struct ethhdr) - sizeof(struct iphdr)));
-
-    return pkt_desc;
 }
 
 void print_packet_desc_array(const struct packet_desc *arr, size_t size) {
@@ -114,33 +77,47 @@ void print_packet_desc_array(const struct packet_desc *arr, size_t size) {
 
 #include <time.h> // For nanosleep
 
+
 void work(void* args) {
     int* xsk_id = (int*)args;
     struct packet_desc pkt_desc_array_rx[PKT_ARRAY_SIZE];
     struct packet_desc pkt_desc_array_tx[PKT_ARRAY_SIZE];
-    struct timespec sleeptime;
-    struct packet_desc tmp_desc;
     int pkt_cnt;
     int i; 
-    
-    // Define sleep time: 100 nanoseconds as an example
-    sleeptime.tv_sec = 0; // 0 seconds
-    sleeptime.tv_nsec = 10000; // 100 nanoseconds
+    struct pollfd fds[2];
+	int nfds = 1;
 
+        // Define the sizes of the headers
+    const size_t eth_header_size = sizeof(struct ether_header); // Ethernet header size
+    const size_t ip_header_size = 20; // IP header size (assuming no options)
+    const size_t udp_header_size = 8; // UDP header size
+
+    // Calculate the offset to the data segment after Ethernet, IP, and UDP headers
+    const size_t data_offset = eth_header_size + ip_header_size + udp_header_size;
+
+	memset(fds, 0, sizeof(fds));
+	fds[0].fd = xsk_socket__fd(xsks[*xsk_id]->xsk);
+	fds[0].events = POLLIN;
+    
+    
     while(__glibc_likely(1)) {
+        poll(fds, nfds, -1);
+        
         pkt_cnt = fill_rx_array(*xsk_id, pkt_desc_array_rx, PKT_ARRAY_SIZE);
-        // if (!pkt_cnt) {
-        //     // nanosleep(&sleeptime, NULL); // Sleep for the defined period
-        //     continue;
-        // }
+
+        if (!pkt_cnt) {
+            // nanosleep(&sleeptime, NULL); // Sleep for the defined period
+            continue;
+        }
 
         // Process packets
         for (i = 0; i < pkt_cnt; i++) {
-            pkt_desc_array_tx[i] = swap_mac_addresses(pkt_desc_array_rx[i]);
+            pkt_desc_array_tx[i] = swap_mac_addresses(pkt_desc_array_rx[i], data_offset);
         }
 
         // Send processed packets
         send_tx_array(*xsk_id, pkt_desc_array_tx, pkt_cnt);
+        // dump_app_stats(1000000);
     }
 }
 

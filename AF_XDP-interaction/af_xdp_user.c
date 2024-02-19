@@ -923,48 +923,6 @@ static int invent_tx_pkts(struct config *cfg, struct xsk_umem_info *umem,
 	return i;
 }
 
-static int tx_batch_pkts(struct xsk_socket_info *xsk,
-			 const unsigned int nr,	struct xdp_desc pkts[nr])
-{
-	struct xsk_umem_info *umem = xsk->umem;
-	uint32_t tx_res;
-	uint32_t tx_idx = 0;
-	int i;
-
-	tx_res = xsk_ring_prod__reserve(&xsk->tx, nr, &tx_idx);
-	if (tx_res != nr) {
-		/* No more transmit slots, drop all packets. Normally AF_XDP
-		 * code would try to run TX-completion CQ step to free up slots,
-		 * but we don't want to introduce variability due to RT
-		 * requirements. Other code make sure CQ is processed.
-		 */
-		for (i = 0; i < nr; i++) {
-			mem_free_umem_frame(&umem->mem, pkts[i].addr);
-		}
-		return 0;
-	}
-
-	for (i = 0; i < nr ; i++) {
-		struct xdp_desc *tx_desc;
-
-		tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, tx_idx + i);
-		*tx_desc = pkts[i];
-		//xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->addr = pkt_addr;
-		//xsk_ring_prod__tx_desc(&xsk->tx, tx_idx)->len = 64;
-		xsk->outstanding_tx++;
-	}
-	xsk_ring_prod__submit(&xsk->tx, nr);
-
-	// Kick Tx
-	// sendto(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
-	complete_tx(xsk);
-
-	// See if kicking Rx-side works
-	// recvfrom(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, NULL);
-
-	return nr;
-}
-
 static bool process_packet(struct xsk_socket_info *xsk,
 			   uint64_t addr, uint32_t len)
 {

@@ -43,6 +43,8 @@
 #include <stdatomic.h>
 #include "xdpsock.h"
 
+#include "packet-checksum.h"
+
 #ifndef SOL_XDP
 #define SOL_XDP 283
 #endif
@@ -121,13 +123,13 @@ static int opt_interval = 1;
 
 static u32 opt_xdp_bind_flags = XDP_USE_NEED_WAKEUP;
 static u32 opt_umem_flags;
-#define OUR_XDP_FRAME_SIZE 1<<11
+#define OUR_XDP_FRAME_SIZE (1 << 11) //2048
 static int opt_mmap_flags;
 // static int opt_xsk_frame_size = XSK_UMEM__DEFAULT_FRAME_SIZE;
-static int opt_xsk_frame_size = OUR_XDP_FRAME_SIZE;
+int opt_xsk_frame_size = OUR_XDP_FRAME_SIZE;
 static int frames_per_pkt;
 
-static bool opt_need_wakeup = true;
+bool opt_need_wakeup = true;
 static u32 opt_num_xsks = 1;
 
 static clockid_t opt_clock = CLOCK_MONOTONIC;
@@ -545,7 +547,7 @@ static void remove_xdp_program(void)
 		fprintf(stderr, "Could not detach XDP program. Error: %s\n", strerror(-err));
 }
 
-static void __exit_with_error(int error, const char *file, const char *func,
+void __exit_with_error(int error, const char *file, const char *func,
 			      int line)
 {
 	fprintf(stderr, "%s:%s:%i: errno: %d/\"%s\"\n", file, func,
@@ -646,164 +648,6 @@ static inline void hex_dump(void *pkt, size_t length, u64 addr)
 		}
 	}
 	printf("\n");
-}
-
-/*
- * This function code has been taken from
- * Linux kernel lib/checksum.c
- */
-static inline unsigned short from32to16(unsigned int x)
-{
-	/* add up 16-bit and 16-bit for 16+c bit */
-	x = (x & 0xffff) + (x >> 16);
-	/* add up carry.. */
-	x = (x & 0xffff) + (x >> 16);
-	return x;
-}
-
-/*
- * This function code has been taken from
- * Linux kernel lib/checksum.c
- */
-static unsigned int do_csum(const unsigned char *buff, int len)
-{
-	unsigned int result = 0;
-	int odd;
-
-	if (len <= 0)
-		goto out;
-	odd = 1 & (unsigned long)buff;
-	if (odd) {
-#ifdef __LITTLE_ENDIAN
-		result += (*buff << 8);
-#else
-		result = *buff;
-#endif
-		len--;
-		buff++;
-	}
-	if (len >= 2) {
-		if (2 & (unsigned long)buff) {
-			result += *(unsigned short *)buff;
-			len -= 2;
-			buff += 2;
-		}
-		if (len >= 4) {
-			const unsigned char *end = buff +
-						   ((unsigned int)len & ~3);
-			unsigned int carry = 0;
-
-			do {
-				unsigned int w = *(unsigned int *)buff;
-
-				buff += 4;
-				result += carry;
-				result += w;
-				carry = (w > result);
-			} while (buff < end);
-			result += carry;
-			result = (result & 0xffff) + (result >> 16);
-		}
-		if (len & 2) {
-			result += *(unsigned short *)buff;
-			buff += 2;
-		}
-	}
-	if (len & 1)
-#ifdef __LITTLE_ENDIAN
-		result += *buff;
-#else
-		result += (*buff << 8);
-#endif
-	result = from32to16(result);
-	if (odd)
-		result = ((result >> 8) & 0xff) | ((result & 0xff) << 8);
-out:
-	return result;
-}
-
-/*
- *	This is a version of ip_compute_csum() optimized for IP headers,
- *	which always checksum on 4 octet boundaries.
- *	This function code has been taken from
- *	Linux kernel lib/checksum.c
- */
-static inline __sum16 ip_fast_csum(const void *iph, unsigned int ihl)
-{
-	return (__sum16)~do_csum(iph, ihl * 4);
-}
-
-/*
- * Fold a partial checksum
- * This function code has been taken from
- * Linux kernel include/asm-generic/checksum.h
- */
-static inline __sum16 csum_fold(__wsum csum)
-{
-	u32 sum = (u32)csum;
-
-	sum = (sum & 0xffff) + (sum >> 16);
-	sum = (sum & 0xffff) + (sum >> 16);
-	return (__sum16)~sum;
-}
-
-/*
- * This function code has been taken from
- * Linux kernel lib/checksum.c
- */
-static inline u32 from64to32(u64 x)
-{
-	/* add up 32-bit and 32-bit for 32+c bit */
-	x = (x & 0xffffffff) + (x >> 32);
-	/* add up carry.. */
-	x = (x & 0xffffffff) + (x >> 32);
-	return (u32)x;
-}
-
-__wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr,
-			  __u32 len, __u8 proto, __wsum sum);
-
-/*
- * This function code has been taken from
- * Linux kernel lib/checksum.c
- */
-__wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr,
-			  __u32 len, __u8 proto, __wsum sum)
-{
-	unsigned long long s = (u32)sum;
-
-	s += (u32)saddr;
-	s += (u32)daddr;
-#ifdef __BIG_ENDIAN__
-	s += proto + len;
-#else
-	s += (proto + len) << 8;
-#endif
-	return (__wsum)from64to32(s);
-}
-
-/*
- * This function has been taken from
- * Linux kernel include/asm-generic/checksum.h
- */
-static inline __sum16
-csum_tcpudp_magic(__be32 saddr, __be32 daddr, __u32 len,
-		  __u8 proto, __wsum sum)
-{
-	return csum_fold(csum_tcpudp_nofold(saddr, daddr, len, proto, sum));
-}
-
-static inline u16 udp_csum(u32 saddr, u32 daddr, u32 len,
-			   u8 proto, u16 *udp_pkt)
-{
-	u32 csum = 0;
-	u32 cnt = 0;
-
-	/* udp hdr and data */
-	for (; cnt < len; cnt += 2)
-		csum += udp_pkt[cnt >> 1];
-
-	return csum_tcpudp_magic(saddr, daddr, len, proto, csum);
 }
 
 #define ETH_FCS_SIZE 4
@@ -922,7 +766,7 @@ static struct xsk_socket_info *xsk_configure_socket(struct xsk_umem_info *umem,
 	return xsk;
 }
 
-inline static void kick_tx(struct xsk_socket_info *xsk)
+inline void kick_tx(struct xsk_socket_info *xsk)
 {
 	int ret;
 	ret = sendto(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
@@ -933,47 +777,27 @@ inline static void kick_tx(struct xsk_socket_info *xsk)
 	exit_with_error(errno);
 }
 
-static inline void complete_tx_release_rx(struct xsk_socket_info *xsk)
+XDP_ALWAYS_INLINE void complete_tx_release_rx(struct xsk_socket_info *xsk)
 {
 	struct xsk_umem_info *umem = xsk->umem;
 	u32 idx_cq = 0, idx_fq = 0;
 	unsigned int rcvd;
-	size_t ndescs;
-	static int x=0;
+	unsigned int i;
+	int ret;
 
-	// if (!xsk->outstanding_tx){
-	// 	printf("sssssssssss");
-	// 	return;
-	// }
-		
+	rcvd = xsk_ring_cons__peek(&umem->cq, opt_batch_size, &idx_cq);
 
-	ndescs = (xsk->outstanding_tx > opt_batch_size) ? opt_batch_size :
-		xsk->outstanding_tx;
 
-	/* re-add completed Tx buffers */
-	rcvd = xsk_ring_cons__peek(&umem->cq, ndescs, &idx_cq);
-	// assert(rcvd !=0);
-	if(x<1000){
-	// x++;
-	// printf("rcvd= %d",rcvd);
-	// }
-	// if (rcvd > 0) {
-		unsigned int i;
-		int ret;
 
 		ret = xsk_ring_prod__reserve(&umem->fq, rcvd, &idx_fq);
-	// 		if(x<1000 && rcvd != ret){
-	// x++;
-	// printf("rcvd != ret rcvd= %d",rcvd);
-	// }
+
 		while (__glibc_unlikely( ret != rcvd)) {
 			if (ret < 0)
 				exit_with_error(-ret);
-			if (xsk_ring_prod__needs_wakeup(&umem->fq)) {
-				xsk->app_stats.fill_fail_polls++;
-				recvfrom(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL,
-					 NULL);
-			}
+		if (!opt_need_wakeup || xsk_ring_prod__needs_wakeup(&xsk->tx)) {
+			xsk->app_stats.tx_wakeup_sendtos++;
+			kick_tx(xsk);
+		}
 			ret = xsk_ring_prod__reserve(&umem->fq, rcvd, &idx_fq);
 		}
 
@@ -983,9 +807,8 @@ static inline void complete_tx_release_rx(struct xsk_socket_info *xsk)
 
 		xsk_ring_prod__submit(&xsk->umem->fq, rcvd);
 		xsk_ring_cons__release(&xsk->umem->cq, rcvd);
-		xsk_ring_cons__release(&xsk->rx, rcvd);
+		// xsk_ring_cons__release(&xsk->rx, rcvd);
 		xsk->outstanding_tx -= rcvd;
-	}
 }
 
 static inline void complete_tx_only(struct xsk_socket_info *xsk,
@@ -1094,6 +917,9 @@ static void enter_xsks_into_map_by_index(int xsk_index)
 {
 	struct bpf_map *data_map;
 	int i, xsks_map;
+	int fd = xsk_socket__fd(xsks[xsk_index]->xsk);
+	int ret;
+	int key = xsk_index;
 	data_map = bpf_object__find_map_by_name(xdp_program__bpf_obj(xdp_prog), ".bss");
 	if (!data_map || !bpf_map__is_internal(data_map)) {
 		fprintf(stderr, "ERROR: bss map found!\n");
@@ -1108,9 +934,6 @@ static void enter_xsks_into_map_by_index(int xsk_index)
 	}
 
 
-	int fd = xsk_socket__fd(xsks[xsk_index]->xsk);
-	int ret;
-	int key = xsk_index;
 	ret = bpf_map_update_elem(xsks_map, &key, &fd, 0);
 	if (ret) {
 		fprintf(stderr, "ERROR: bpf_map_update_elem %d\n", i);
@@ -1143,40 +966,28 @@ XDP_ALWAYS_INLINE  u16 fill_rx_array(u16 xsk_id,
 						 struct packet_desc *rx_array,
 						 u16 array_size) {
 
-    unsigned int rcvd, i, eop_cnt = 0;
-    u32 idx_rx = 0, wanted_num_of_packets = 0;
+    unsigned int rcvd, i;
+    u32 idx_rx = 0;
 	struct xsk_socket_info *xsk = xsks[xsk_id];
-	static int x =0;
     // Peek into the receive ring buffer to check the number of received packets
+	complete_tx_release_rx(xsk);
     rcvd = xsk_ring_cons__peek(&xsk->rx, opt_batch_size, &idx_rx);
-	// if( x<1000)
-	// {
-	// 	x++;
-	// 	printf("rcvd =%d",rcvd);
-	// }
-    // If no packets are received, perform optional polling or wait for a wakeup signal
-    // if (!rcvd) {
-    //     if (xsk_ring_prod__needs_wakeup(&xsk->umem->fq)) {
-    //         xsk->app_stats.rx_empty_polls++;
-    //         recvfrom(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, NULL); // Read 0 bits from fd to null
-    //     }
-    //     return 0;
-    // }
-	// printf("rcvd =%d\n",rcvd);
-    // Determine the number of packets to process, capped by the array size or the received count
-	// 	if( x<1000)
-	// {
-	// 	x++;
-	// 	printf("rcvd =%d",rcvd);
-	// }
+
+    if (!rcvd) {
+        if (xsk_ring_prod__needs_wakeup(&xsk->umem->fq)) {
+            xsk->app_stats.rx_empty_polls++;
+            recvfrom(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, NULL); // Read 0 bits from fd to null
+        }
+	}
+
     // wanted_num_of_packets = array_size < rcvd ? array_size : rcvd;
-	wanted_num_of_packets = rcvd;
+	// wanted_num_of_packets = rcvd;
     // Process each packet and populate the provided array
-    for (i = 0; i < wanted_num_of_packets; i++) {
+    for (i = 0; i < rcvd; i++) {
         const struct xdp_desc *desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
         u64 addr = desc->addr;
         u32 len = desc->len;
-        eop_cnt += IS_EOP_DESC(desc->options);
+        // eop_cnt += IS_EOP_DESC(desc->options);
 
         addr = xsk_umem__add_offset_to_addr(addr);
         char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
@@ -1188,7 +999,7 @@ XDP_ALWAYS_INLINE  u16 fill_rx_array(u16 xsk_id,
     // Update statistics
     // xsk->ring_stats.rx_npkts += eop_cnt;
     // xsk->ring_stats.rx_frags += rcvd;
-	return wanted_num_of_packets;
+	return rcvd;
 }
 
 
@@ -1237,10 +1048,11 @@ while (packets_done < pkt_cnt) {
     unsigned int i;
 
     nb = xsk_ring_prod__reserve(&xsk->tx, pkt_cnt, &idx);
-    // if (nb != batch_size) {
-    //     printf("nb = %d, expected = %d\n", nb, batch_size);
-    //     // Optionally, handle the case when less space is reserved than requested.
-    // }
+    if (nb != pkt_cnt) {
+        // printf("nb = %d, expected = %d\n", nb, batch_size);
+		complete_tx_release_rx(xsk);
+        // Optionally, handle the case when less space is reserved than requested.
+    }
 
     for (i = 0; i < nb; ) {
         len = tx_array[packets_done].len;
@@ -1265,6 +1077,7 @@ while (packets_done < pkt_cnt) {
         } while (len > 0); // Ensure we do not exceed the batch size.
     }
     xsk_ring_prod__submit(&xsk->tx, nb);
+	xsk_ring_cons__release(&xsk->rx, packets_done);
     xsk->outstanding_tx += nb;
     // xsk->ring_stats.tx_frags += nb;
 }
@@ -1272,69 +1085,6 @@ while (packets_done < pkt_cnt) {
 return 0;
 
 }
-
-// inline static int send_tx_array(u32 xsk_idx, struct packet_desc* tx_array, int batch_size, u32 pkt_cnt)
-// {
-// 	u32 idx;
-// 	u32 frame_nb = 0;
-// 	unsigned int i;
-// 	u32 packets_done = 0;
-// 	struct xsk_socket_info *xsk = xsks[xsk_idx];
-
-// 	while(packets_done < pkt_cnt){
-// 		complete_tx_release_rx(xsk);
-// 		if(__glibc_likely(pkt_cnt - packets_done < batch_size)){
-// 			batch_size = pkt_cnt - packets_done;
-// 		}
-
-// 		// while (xsk_ring_prod__reserve(&xsk->tx, batch_size, &idx) < batch_size) {
-// 		// 	static int x=0;
-// 		// 	x++;
-// 		// 	if(x<100) printf("xsk_ring_prod__reserve send_tx_array\n");
-// 		// 	complete_tx_only(xsk, batch_size);
-// 		// }
-// 		static int y=0;
-// 		y++;
-// 		int nb=xsk_ring_prod__reserve(&xsk->tx, batch_size, &idx);
-// 		if(nb != batch_size) printf(" nb =%d\n",nb);
-// 			while (nb < batch_size) {
-// 			static int x=0;
-// 			x++;
-// 			if(x<100) printf("xsk_ring_prod__reserve send_tx_array\n");
-// 			complete_tx_only(xsk, batch_size);
-// 		}
-
-// 		for (i = 0; i < batch_size; ) {
-// 			u32 len = tx_array[i].len;
-// 			// hex_dump((u64*)tx_array[i].addr, len, (u64)tx_array[i].addr);
-
-// 			do {
-// 				struct xdp_desc *tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx + i);
-// 				assert(tx_desc != 0);
-// 				tx_desc->addr = CONVERT_TO_RELATIVE_ADDRESS(tx_array[packets_done].addr);
-// 				if (len > opt_xsk_frame_size) {
-// 					tx_desc->len = opt_xsk_frame_size;
-// 					tx_desc->options = XDP_PKT_CONTD;
-// 				} else {
-// 					tx_desc->len = len;
-// 					tx_desc->options = 0;
-// 					xsk->ring_stats.tx_npkts++;
-// 					packets_done++;
-// 				}
-// 				len -= tx_desc->len;
-// 				frame_nb = (frame_nb + 1) % NUM_FRAMES;
-// 				i++;
-// 			} while (len);
-// 		}
-// 		xsk_ring_prod__submit(&xsk->tx, batch_size);
-// 		xsk->outstanding_tx += batch_size;
-// 		xsk->ring_stats.tx_frags += batch_size;
-// 		// complete_tx_release_rx(xsk);
-// 	}
-	
-// 	return 0;
-// }
-
 
 void xdp_general_init(int number_of_sockets, char* interface_name, pthread_t *threads_array)
 {
@@ -1347,8 +1097,6 @@ void xdp_general_init(int number_of_sockets, char* interface_name, pthread_t *th
 	signal(SIGABRT, int_exit);
 	opt_if = interface_name;
 	opt_ifindex = if_nametoindex(opt_if);
-	// opt_umem_flags |= XDP_UMEM_UNALIGNED_CHUNK_FLAG;
-	// opt_mmap_flags = MAP_HUGETLB;
 	
 	if (setrlimit(RLIMIT_MEMLOCK, &r)) {
 		fprintf(stderr, "ERROR: setrlimit(RLIMIT_MEMLOCK) \"%s\"\n",
@@ -1415,15 +1163,6 @@ void xdp_init_thread(int number_of_sockets, char* interface_name, int thread_id)
 	}
 }
 
-
-
-// void xdp_exit_cleanup(int socket_index) {
-//     // Additional cleanup logic if needed
-//     if (socket_index > -1) {
-//         xsk_socket__delete(xsks[socket_index]->xsk);
-//     }
-// }
-
 void final_cleanup(){
 
 	munmap(bufs, NUM_FRAMES * opt_xsk_frame_size);
@@ -1434,40 +1173,39 @@ void final_cleanup(){
 	}
 }
 
+XDP_ALWAYS_INLINE
+struct packet_desc
+swap_mac_addresses(struct packet_desc data,
+                   const size_t data_offset)
+{
+    struct ether_header *eth;
+	struct ether_addr tmp;
+	struct iphdr *ipv4_hdr;
+	struct udphdr *udp_hdr;
+	uint8_t *payload;
 
-XDP_ALWAYS_INLINE struct packet_desc swap_mac_addresses(struct packet_desc data) {
-    // Directly swap MAC addresses using temporary storage for MAC address
-    struct ether_header *eth = (struct ether_header *)data.addr;
-    struct ether_addr tmp;
-
+	eth = (struct ether_header *)data.addr;
+	ipv4_hdr = (struct iphdr *)((uint8_t*)eth + sizeof(*eth));
+	udp_hdr = (struct udphdr *)((uint8_t*)ipv4_hdr + sizeof(*ipv4_hdr));
+    
     // Swap source and destination MAC addresses directly
     tmp = *(struct ether_addr *)&eth->ether_shost;
     *(struct ether_addr *)&eth->ether_shost = *(struct ether_addr *)&eth->ether_dhost;
     *(struct ether_addr *)&eth->ether_dhost = tmp;
 
-    // The memcpy operation you mentioned is essential but not visible in the context of MAC swapping.
-    // Ensure it's still relevant and consider its necessity based on the overall packet processing logic.
-    memcpy(data.addr + 46, data.addr + 42, 4);
+    // Now, access the first and second integers in the data segment
+    // The first integer is right after the headers, the second follows immediately
+	payload = (uint8_t*)(data.addr + data_offset);
+
+    uint32_t *first_int = (uint32_t*)payload;
+    uint32_t *second_int = (uint32_t*)(payload + sizeof(uint32_t));
+
+    // Replace the second integer with the first integer
+    *second_int = *first_int;
+
+	compute_udp_checksum(ipv4_hdr, udp_hdr);
+	compute_ip_checksum(ipv4_hdr);
 
     return data;
 }
 
-
-
-// void swap_src_dst_mac_and_modify_payload(struct rte_mbuf *mbuf) {
-//     // Assuming data points to the Ethernet header
-//     uint8_t *data = rte_pktmbuf_mtod(mbuf, uint8_t*);
-
-//     // Swap source and destination MAC addresses
-//     for (int i = 0; i < 6; i++) {
-//         uint8_t temp = data[i];
-//         data[i] = data[i + 6];
-//         data[i + 6] = temp;
-//     }
-
-//     // Assuming payload starts right after Ethernet header (14 bytes in)
-//     uint8_t *payload = data + 14;
-
-//     // Copy the first 4 bytes of the payload into the second 4 bytes
-//     memcpy(payload + 4, payload, 4);
-// }
