@@ -1173,6 +1173,8 @@ void final_cleanup(){
 	}
 }
 
+ int x=0;
+
 XDP_ALWAYS_INLINE
 struct packet_desc
 swap_mac_addresses(struct packet_desc data,
@@ -1187,7 +1189,14 @@ swap_mac_addresses(struct packet_desc data,
 	eth = (struct ether_header *)data.addr;
 	ipv4_hdr = (struct iphdr *)((uint8_t*)eth + sizeof(*eth));
 	udp_hdr = (struct udphdr *)((uint8_t*)ipv4_hdr + sizeof(*ipv4_hdr));
-    
+	//  x++;
+	//     if (x%10000 == 0) {
+    //     // Handle error for packet size being too small
+    //     // This could be returning an error code, logging an error, etc.
+	// 	printf("len = %d\n", data.len);
+    //      // Exit the function or handle the error appropriately
+    // }
+   
     // Swap source and destination MAC addresses directly
     tmp = *(struct ether_addr *)&eth->ether_shost;
     *(struct ether_addr *)&eth->ether_shost = *(struct ether_addr *)&eth->ether_dhost;
@@ -1202,10 +1211,63 @@ swap_mac_addresses(struct packet_desc data,
 
     // Replace the second integer with the first integer
     *second_int = *first_int;
+	
+		    // if (x%10000 == 0) {
+        // Handle error for packet size being too small
+        // This could be returning an error code, logging an error, etc.
+		// printf("len = %d\n", data.len);
+         // Exit the function or handle the error appropriately
+    // }
 
 	// compute_udp_checksum(ipv4_hdr, udp_hdr);
 	// compute_ip_checksum(ipv4_hdr);
 
     return data;
 }
+
+
+
+// Assuming struct packet_desc is defined elsewhere
+// and includes a member `size` that represents the total packet size.
+
+// XDP_ALWAYS_INLINE struct packet_desc swap_mac_addresses(struct packet_desc data, const size_t data_offset) {
+//     // Define the minimum required size for a packet to be valid
+//     // Ethernet header (14 bytes) + IP header (20 bytes, for a header without options) 
+//     // + UDP header (8 bytes)
+//     const size_t min_packet_size = sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct udphdr);
+	
+//     // Check if the packet is at least large enough to contain the expected headers
+
+
+//     struct ether_header *eth;
+//     struct ether_addr tmp;
+//     struct iphdr *ipv4_hdr;
+//     struct udphdr *udp_hdr;
+//     uint8_t *payload;
+
+//     eth = (struct ether_header *)data.addr;
+//     ipv4_hdr = (struct iphdr *)((uint8_t*)eth + sizeof(*eth));
+//     udp_hdr = (struct udphdr *)((uint8_t*)ipv4_hdr + sizeof(*ipv4_hdr));
+
+//     // Swap source and destination MAC addresses directly
+//     tmp = *(struct ether_addr *)&eth->ether_shost;
+//     *(struct ether_addr *)&eth->ether_shost = *(struct ether_addr *)&eth->ether_dhost;
+//     *(struct ether_addr *)&eth->ether_dhost = tmp;
+
+//     // Now, access the first and second integers in the data segment
+//     // The first integer is right after the headers, the second follows immediately
+//     payload = (uint8_t*)(data.addr + data_offset);
+
+//     uint32_t *first_int = (uint32_t*)payload;
+//     uint32_t *second_int = (uint32_t*)(payload + sizeof(uint32_t));
+
+//     // Replace the second integer with the first integer
+//     *second_int = *first_int;
+
+//     // compute_udp_checksum(ipv4_hdr, udp_hdr);
+//     // compute_ip_checksum(ipv4_hdr);
+
+//     // Return data or modify the function signature as necessary to handle the changes appropriately
+// }
+
 

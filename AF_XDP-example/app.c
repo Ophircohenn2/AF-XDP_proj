@@ -14,6 +14,12 @@
 //#include <linux/ip.h> // For csum_replace2
 #include <stdint.h>
 
+int fibonacci(int n) {
+    if (n <= 1)
+        return n;
+    else
+        return fibonacci(n-1) + fibonacci(n-2);
+}
 
 inline uint16_t checksum(u16 *data, int len) {
   uint32_t sum = 0;
@@ -139,24 +145,27 @@ void work(void* args) {
 
         // Process packets
         for (i = 0; i < pkt_cnt; i++) {
+            // fibonacci(15);
             pkt_desc_array_tx[i] = swap_mac_addresses(pkt_desc_array_rx[i], data_offset);
         }
         sum_of_pkt += pkt_cnt;
 
 
 
-    // Call nanosleep
-    if (nanosleep(&ts, NULL) < 0) {
-        perror("nanosleep failed");
-    }
+    // // Call nanosleep
+    // if (nanosleep(&ts, NULL) < 0) {
+    //     perror("nanosleep failed");
+    // }
         send_tx_array(*xsk_id, pkt_desc_array_tx, pkt_cnt);
         // dump_app_stats(1000000);
     }
 }
 
-int main()
+int main(int argc, char** argv)
 {    
-    int number_of_sockets = 8;
+    int number_of_sockets = atoi(argv[1]);
+    printf("%s\n", argv[1]);
+    printf("%d\n", number_of_sockets);
     char* interface_name = "enp6s0f1";
     pthread_t threads[number_of_sockets];
     opt_num_xsks = number_of_sockets;
@@ -185,6 +194,7 @@ int main()
     }
     printf("\n packet count = %d\n",sum_of_pkt);
     printf("\n tx sum = %d\n",tx_sum);
+    printf("\n x = %d\n",x);
 
     final_cleanup();
     return 0;
