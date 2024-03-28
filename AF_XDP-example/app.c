@@ -1,7 +1,5 @@
 #include "xdpsock.c"
 #include "xdpsock.h"
-
-
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <linux/if_link.h>
@@ -11,10 +9,16 @@
 #include <linux/icmp.h>
 #include <linux/ipv6.h>
 #include <linux/icmpv6.h>
-//#include <linux/ip.h> // For csum_replace2
 #include <stdint.h>
+#include <stdio.h>
+#include <time.h>
 
-int fibonacci(int n) {
+#define PKT_ARRAY_SIZE opt_batch_size
+#define FIBONACCI_WORKLOAD 10
+
+bool do_pooling = false;
+
+inline int fibonacci(int n) {
     if (n <= 1)
         return n;
     else
@@ -43,8 +47,6 @@ inline uint16_t checksum(u16 *data, int len) {
 
   return ~sum;
 }
-
-#define PKT_ARRAY_SIZE opt_batch_size
 
 static inline __sum16 csum16_add(__sum16 csum, __be16 addend) {
     uint16_t res = (__u16)csum;
@@ -81,8 +83,6 @@ void print_packet_desc_array(const struct packet_desc *arr, size_t size) {
     }
 }
 
-#include <time.h> // For nanosleep
-
 void msleep(long milliseconds) {
     struct timespec req, rem;
     int wasInterrupted;
@@ -104,9 +104,7 @@ void msleep(long milliseconds) {
         }
     } while (wasInterrupted);
 }
-#include <stdio.h>
-#include <time.h>
-bool do_pooling = false;
+
 void work(void* args) {
     int* xsk_id = (int*)args;
     struct packet_desc pkt_desc_array_rx[PKT_ARRAY_SIZE];
@@ -115,12 +113,8 @@ void work(void* args) {
     int i; 
     struct pollfd fds[2];
 	int nfds = 1;
-    // struct timespec ts;
-    // ts.tv_sec = 0;
-    // ts.tv_nsec = 10 * 1; // 500 million nanoseconds
-    
 
-        // Define the sizes of the headers
+    // Define the sizes of the headers
     const size_t eth_header_size = sizeof(struct ether_header); // Ethernet header size
     const size_t ip_header_size = 20; // IP header size (assuming no options)
     const size_t udp_header_size = 8; // UDP header size
@@ -134,19 +128,16 @@ void work(void* args) {
     
     
     while(__glibc_likely(1)) {
-        
-        
         pkt_cnt = fill_rx_array(*xsk_id, pkt_desc_array_rx, PKT_ARRAY_SIZE);
 
         if (!pkt_cnt) {
-            // nanosleep(&sleeptime, NULL); // Sleep for the defined period
             if(do_pooling) poll(fds, nfds, -1);
             continue;
         }
 
         // Process packets
         for (i = 0; i < pkt_cnt; i++) {
-            fibonacci(10);
+            fibonacci(FIBONACCI_WORKLOAD);
             pkt_desc_array_tx[i] = swap_mac_addresses(pkt_desc_array_rx[i], data_offset);
         }
 
@@ -157,23 +148,24 @@ void work(void* args) {
 
 int main(int argc, char** argv)
 {    
-    int number_of_sockets = atoi(argv[1]);
-    do_pooling = atoi(argv[2]) == 1 ? true : false;
-    printf("%s\n", argv[1]);
-    printf("%d\n", number_of_sockets);
-    char* interface_name = "enp6s0f1";
+    char* interface_name = argv[1];
+    int number_of_sockets = atoi(argv[2]);
+    do_pooling = atoi(argv[3]) == 1 ? true : false;
+
+    printf("interface name: %s\n", interface_name);
+    printf("number_of_sockets %d\n", number_of_sockets);
+    
     pthread_t threads[number_of_sockets];
     opt_num_xsks = number_of_sockets;
     signal(SIGINT, int_exit);
 	signal(SIGTERM, int_exit);
 	signal(SIGABRT, int_exit);
     
-
     xdp_general_init(number_of_sockets, interface_name, threads);
 
     int id[number_of_sockets];
 
-    for(int i=0; i<number_of_sockets; i++){
+    for(int i=0; i<number_of_sockets; i++) {
         id[i] = i;
         xdp_init_thread(number_of_sockets, interface_name, i);
         pthread_create(&threads[i], NULL, (void*)work, (void*)&id[i]);
@@ -184,18 +176,11 @@ int main(int argc, char** argv)
     sigaddset(&mask, SIGINT);
     sigprocmask(SIG_BLOCK, &mask, &old_mask);
     // Wait for the threads to finish
-    for(int i=0; i<number_of_sockets; i++){
+    for(int i=0; i<number_of_sockets; i++) {
         pthread_join(threads[i], NULL);
     }
 
     final_cleanup();
     return 0;
 }
-
-
-
-
-
-
-
 

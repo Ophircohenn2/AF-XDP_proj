@@ -87,6 +87,27 @@
 
 #define MASK_FOR_UMEM_ADDRESS 0x1FFFFF
 #define CONVERT_TO_RELATIVE_ADDRESS(addr) (addr & MASK_FOR_UMEM_ADDRESS)
+#define OUR_XDP_FRAME_SIZE (1 << 11) //2048
+
+#define exit_with_error(error) __exit_with_error(error, __FILE__, __func__, __LINE__)
+
+#define ETH_FCS_SIZE 4
+
+#define ETH_HDR_SIZE (opt_vlan_tag ? sizeof(struct vlan_ethhdr) : \
+		      sizeof(struct ethhdr))
+#define PKTGEN_HDR_SIZE (opt_tstamp ? sizeof(struct pktgen_hdr) : 0)
+#define PKT_HDR_SIZE (ETH_HDR_SIZE + sizeof(struct iphdr) + \
+		      sizeof(struct udphdr) + PKTGEN_HDR_SIZE)
+#define PKTGEN_HDR_OFFSET (ETH_HDR_SIZE + sizeof(struct iphdr) + \
+			   sizeof(struct udphdr))
+#define PKTGEN_SIZE_MIN (PKTGEN_HDR_OFFSET + sizeof(struct pktgen_hdr) + \
+			 ETH_FCS_SIZE)
+
+#define PKT_SIZE		(opt_pkt_size - ETH_FCS_SIZE)
+#define IP_PKT_SIZE		(PKT_SIZE - ETH_HDR_SIZE)
+#define UDP_PKT_SIZE		(IP_PKT_SIZE - sizeof(struct iphdr))
+#define UDP_PKT_DATA_SIZE	(UDP_PKT_SIZE - \
+				 (sizeof(struct udphdr) + PKTGEN_HDR_SIZE))
 
 typedef __u64 u64;
 typedef __u32 u32;
@@ -110,44 +131,38 @@ u32 opt_batch_size = 64;
 
 static u16 opt_pkt_size = MIN_PKT_SIZE;
 
-
 static bool opt_extra_stats;
 static bool opt_quiet = true; //print stats to terminal
 static bool opt_app_stats;
-
 static u32 irq_no;
 static int irqs_at_init = -1;
-
 static int opt_poll;
 static int opt_interval = 1;
-
 static u32 opt_xdp_bind_flags = XDP_USE_NEED_WAKEUP;
 static u32 opt_umem_flags;
-#define OUR_XDP_FRAME_SIZE (1 << 11) //2048
 static int opt_mmap_flags;
-// static int opt_xsk_frame_size = XSK_UMEM__DEFAULT_FRAME_SIZE;
 int opt_xsk_frame_size = OUR_XDP_FRAME_SIZE;
 static int frames_per_pkt;
-
 bool opt_need_wakeup = true;
 static u32 opt_num_xsks = 1;
-
 static clockid_t opt_clock = CLOCK_MONOTONIC;
 static unsigned long opt_tx_cycle_ns;
 static int opt_schpolicy = SCHED_OTHER;
 static int opt_schprio = SCHED_PRI__DEFAULT;
-
 static struct xdp_program *xdp_prog;
 static bool opt_frags;
 static bool load_xdp_prog = true;
-
 static bool finish_flag = false;
 static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t* threads;
-
 static struct xsk_umem_info *umems[MAX_SOCKS];
 static void** bufs_array[MAX_SOCKS];
 
+static int num_socks;
+struct xsk_socket_info *xsks[MAX_SOCKS];
+int sock;
+pthread_t pt;
+void *bufs;
 
 struct vlan_ethhdr {
 	unsigned char h_dest[6];
@@ -241,14 +256,7 @@ struct packet_desc
     u64 addr;
     u32 len;
     u32 option;
-} __attribute__((aligned(64))); // Align to 64-byte cache line boundary
-
-
-static int num_socks;
-struct xsk_socket_info *xsks[MAX_SOCKS];
-int sock;
-pthread_t pt;
-void *bufs;
+};
 
 static unsigned long get_nsecs(void)
 {
@@ -559,9 +567,6 @@ void __exit_with_error(int error, const char *file, const char *func,
 	exit(EXIT_FAILURE);
 }
 
-#define exit_with_error(error) __exit_with_error(error, __FILE__, __func__, __LINE__)
-
-
 void handle_signals() {
     sigset_t mask, old_mask;
     sigemptyset(&mask);
@@ -599,7 +604,6 @@ void notify_threads(pthread_t current_thread_id) {
 	}
     pthread_mutex_unlock(&mutex);
 }
-
 
 
 void xdp_exit(void) {
@@ -650,24 +654,6 @@ static inline void hex_dump(void *pkt, size_t length, u64 addr)
 	}
 	printf("\n");
 }
-
-#define ETH_FCS_SIZE 4
-
-#define ETH_HDR_SIZE (opt_vlan_tag ? sizeof(struct vlan_ethhdr) : \
-		      sizeof(struct ethhdr))
-#define PKTGEN_HDR_SIZE (opt_tstamp ? sizeof(struct pktgen_hdr) : 0)
-#define PKT_HDR_SIZE (ETH_HDR_SIZE + sizeof(struct iphdr) + \
-		      sizeof(struct udphdr) + PKTGEN_HDR_SIZE)
-#define PKTGEN_HDR_OFFSET (ETH_HDR_SIZE + sizeof(struct iphdr) + \
-			   sizeof(struct udphdr))
-#define PKTGEN_SIZE_MIN (PKTGEN_HDR_OFFSET + sizeof(struct pktgen_hdr) + \
-			 ETH_FCS_SIZE)
-
-#define PKT_SIZE		(opt_pkt_size - ETH_FCS_SIZE)
-#define IP_PKT_SIZE		(PKT_SIZE - ETH_HDR_SIZE)
-#define UDP_PKT_SIZE		(IP_PKT_SIZE - sizeof(struct iphdr))
-#define UDP_PKT_DATA_SIZE	(UDP_PKT_SIZE - \
-				 (sizeof(struct udphdr) + PKTGEN_HDR_SIZE))
 
 static struct xsk_umem_info *xsk_configure_umem(void *buffer, u64 size)
 {
@@ -760,7 +746,7 @@ static struct xsk_socket_info *xsk_configure_socket(struct xsk_umem_info *umem,
 	return xsk;
 }
 
-inline void kick_tx(struct xsk_socket_info *xsk)
+static inline void kick_tx(struct xsk_socket_info *xsk)
 {
 	int ret;
 	ret = sendto(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
@@ -771,7 +757,7 @@ inline void kick_tx(struct xsk_socket_info *xsk)
 	exit_with_error(errno);
 }
 
-XDP_ALWAYS_INLINE void complete_tx_release_rx(struct xsk_socket_info *xsk)
+static inline void complete_tx_release_rx(struct xsk_socket_info *xsk)
 {
 	struct xsk_umem_info *umem = xsk->umem;
 	u32 idx_cq = 0, idx_fq = 0;
@@ -801,12 +787,11 @@ XDP_ALWAYS_INLINE void complete_tx_release_rx(struct xsk_socket_info *xsk)
 
 		xsk_ring_prod__submit(&xsk->umem->fq, rcvd);
 		xsk_ring_cons__release(&xsk->umem->cq, rcvd);
-		// xsk_ring_cons__release(&xsk->rx, rcvd);
 		xsk->outstanding_tx -= rcvd;
 }
 
 static inline void complete_tx_only(struct xsk_socket_info *xsk,
-				    int batch_size)
+				    				int batch_size)
 {
 	unsigned int rcvd;
 	u32 idx;
@@ -955,11 +940,10 @@ static void apply_setsockopt(struct xsk_socket_info *xsk)
 		exit_with_error(errno);
 }
 
-
-XDP_ALWAYS_INLINE  u16 fill_rx_array(u16 xsk_id, 
-						 struct packet_desc *rx_array,
-						 u16 array_size) {
-
+static inline  u16 fill_rx_array(u16 xsk_id, 
+						  struct packet_desc *rx_array,
+						  u16 array_size) 
+{
     unsigned int rcvd, i;
     u32 idx_rx = 0;
 	struct xsk_socket_info *xsk = xsks[xsk_id];
@@ -979,7 +963,6 @@ XDP_ALWAYS_INLINE  u16 fill_rx_array(u16 xsk_id,
         const struct xdp_desc *desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
         u64 addr = desc->addr;
         u32 len = desc->len;
-        // eop_cnt += IS_EOP_DESC(desc->options);
 
         addr = xsk_umem__add_offset_to_addr(addr);
         char *pkt = xsk_umem__get_data(xsk->umem->buffer, addr);
@@ -992,11 +975,8 @@ XDP_ALWAYS_INLINE  u16 fill_rx_array(u16 xsk_id,
 }
 
 
-XDP_ALWAYS_INLINE  void release_rx(u16 xsk_id, u32 done_packets,
-							 struct packet_desc* pkt_array) 
-    // we need to Check if the number of done_packets is less than rx_size and pkt_array_id is within bounds
-    // Also, ensure that xsks[pkt_array_id] is not NULL
-    // If any of these conditions are not met, exit with an error code
+static inline  void release_rx(u16 xsk_id, u32 done_packets,
+						struct packet_desc* pkt_array) 
 {
 	unsigned int rcvd, i;
 	u32 idx_fq = 0;
@@ -1024,7 +1004,7 @@ XDP_ALWAYS_INLINE  void release_rx(u16 xsk_id, u32 done_packets,
 }
 
 
-XDP_ALWAYS_INLINE int send_tx_array(u32 xsk_idx, struct packet_desc *tx_array, u32 pkt_cnt) {
+static inline int send_tx_array(u32 xsk_idx, struct packet_desc *tx_array, u32 pkt_cnt) {
 
 	u32 packets_done = 0;
 	struct xsk_socket_info *xsk = xsks[xsk_idx];
@@ -1039,7 +1019,6 @@ XDP_ALWAYS_INLINE int send_tx_array(u32 xsk_idx, struct packet_desc *tx_array, u
 		nb = xsk_ring_prod__reserve(&xsk->tx, pkt_cnt, &idx);
 		if (nb != pkt_cnt) {
 			complete_tx_release_rx(xsk);
-			// Optionally, handle the case when less space is reserved than requested.
 		}
 
 		for (i = 0; i < nb; ) {
@@ -1055,7 +1034,6 @@ XDP_ALWAYS_INLINE int send_tx_array(u32 xsk_idx, struct packet_desc *tx_array, u
 				} else {
 					tx_desc->len = len;
 					tx_desc->options = 0;
-					// xsk->ring_stats.tx_npkts++;
 					packets_done++;
 					len = 0; // Ensure the loop exits when the entire packet is processed.
 				}
@@ -1161,31 +1139,22 @@ void final_cleanup(){
 }
 
 
-XDP_ALWAYS_INLINE struct packet_desc swap_mac_addresses(struct packet_desc data,
-                   										const size_t data_offset)
+static inline struct packet_desc swap_mac_addresses(struct packet_desc data,
+                   							 const size_t data_offset)
 {
     struct ether_header *eth;
 	struct ether_addr tmp;
-	// struct iphdr *ipv4_hdr;
 	uint8_t *payload;
+	uint32_t *first_int;
+	uint32_t *second_int;
 
 	eth = (struct ether_header *)data.addr;
-	// ipv4_hdr = (struct iphdr *)((uint8_t*)eth + sizeof(*eth));
-	// udp_hdr = (struct udphdr *)((uint8_t*)ipv4_hdr + sizeof(*ipv4_hdr));
-   
-    // Swap source and destination MAC addresses directly
     tmp = *(struct ether_addr *)&eth->ether_shost;
     *(struct ether_addr *)&eth->ether_shost = *(struct ether_addr *)&eth->ether_dhost;
     *(struct ether_addr *)&eth->ether_dhost = tmp;
-
-    // Now, access the first and second integers in the data segment
-    // The first integer is right after the headers, the second follows immediately
 	payload = (uint8_t*)(data.addr + data_offset);
-
-    uint32_t *first_int = (uint32_t*)payload;
-    uint32_t *second_int = (uint32_t*)(payload + sizeof(uint32_t));
-
-    // Replace the second integer with the first integer
+    first_int = (uint32_t*)payload;
+    second_int = (uint32_t*)(payload + sizeof(uint32_t));
     *second_int = *first_int;
 
     return data;
