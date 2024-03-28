@@ -734,14 +734,7 @@ static struct xsk_socket_info *xsk_configure_socket(struct xsk_umem_info *umem,
 	xsk->umem = umem;
 	cfg.rx_size = XSK_RING_CONS__DEFAULT_NUM_DESCS;
 	cfg.tx_size = XSK_RING_PROD__DEFAULT_NUM_DESCS;
-	// if (load_xdp_prog){
-		cfg.libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD;
-	// }
-	// else
-		// cfg.libxdp_flags = 0;
-	// if (opt_attach_mode == XDP_MODE_SKB)
-	// 	cfg.xdp_flags = XDP_FLAGS_SKB_MODE;
-	// else
+	cfg.libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD;
 	cfg.xdp_flags = XDP_FLAGS_DRV_MODE;
 	cfg.bind_flags = opt_xdp_bind_flags;
 
@@ -981,8 +974,6 @@ XDP_ALWAYS_INLINE  u16 fill_rx_array(u16 xsk_id,
         }
 	}
 
-    // wanted_num_of_packets = array_size < rcvd ? array_size : rcvd;
-	// wanted_num_of_packets = rcvd;
     // Process each packet and populate the provided array
     for (i = 0; i < rcvd; i++) {
         const struct xdp_desc *desc = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++);
@@ -997,9 +988,6 @@ XDP_ALWAYS_INLINE  u16 fill_rx_array(u16 xsk_id,
         rx_array[i].option = desc->options;
 	}
 
-    // Update statistics
-    // xsk->ring_stats.rx_npkts += eop_cnt;
-    // xsk->ring_stats.rx_frags += rcvd;
 	return rcvd;
 }
 
@@ -1034,54 +1022,53 @@ XDP_ALWAYS_INLINE  void release_rx(u16 xsk_id, u32 done_packets,
 	xsk_ring_prod__submit(&xsk->umem->fq, rcvd);
 	xsk_ring_cons__release(&xsk->rx, rcvd);
 }
-int tx_sum =0;
+
+
 XDP_ALWAYS_INLINE int send_tx_array(u32 xsk_idx, struct packet_desc *tx_array, u32 pkt_cnt) {
 
 	u32 packets_done = 0;
 	struct xsk_socket_info *xsk = xsks[xsk_idx];
    complete_tx_release_rx(xsk);
-while (packets_done < pkt_cnt) {
-	struct xdp_desc *tx_desc;
-	u32 idx;
-	int nb;
-	u32 len;
-    unsigned int i;
+	while (packets_done < pkt_cnt) {
+		struct xdp_desc *tx_desc;
+		u32 idx;
+		int nb;
+		u32 len;
+		unsigned int i;
 
-    nb = xsk_ring_prod__reserve(&xsk->tx, pkt_cnt, &idx);
-    if (nb != pkt_cnt) {
-        // printf("nb = %d, expected = %d\n", nb, batch_size);
-		complete_tx_release_rx(xsk);
-        // Optionally, handle the case when less space is reserved than requested.
-    }
+		nb = xsk_ring_prod__reserve(&xsk->tx, pkt_cnt, &idx);
+		if (nb != pkt_cnt) {
+			complete_tx_release_rx(xsk);
+			// Optionally, handle the case when less space is reserved than requested.
+		}
 
-    for (i = 0; i < nb; ) {
-        len = tx_array[packets_done].len;
-        do {
-            tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx + i);
-            assert(tx_desc != NULL);
-            tx_desc->addr = CONVERT_TO_RELATIVE_ADDRESS(tx_array[packets_done].addr);
-            if (__glibc_unlikely(len > opt_xsk_frame_size)) {
-                tx_desc->len = opt_xsk_frame_size;
-                tx_desc->options = XDP_PKT_CONTD;
-				len -= tx_desc->len;
-            } else {
-                tx_desc->len = len;
-                tx_desc->options = 0;
-                // xsk->ring_stats.tx_npkts++;
-                packets_done++;
-                len = 0; // Ensure the loop exits when the entire packet is processed.
-            }
-            
-            i++;
-        } while (len > 0); // Ensure we do not exceed the batch size.
-    }
-	tx_sum += nb; 
-    xsk_ring_prod__submit(&xsk->tx, nb);
-	xsk_ring_cons__release(&xsk->rx, nb);
-    xsk->outstanding_tx += nb;
-    // xsk->ring_stats.tx_frags += nb;
-}
-// complete_tx_release_rx(xsk);
+		for (i = 0; i < nb; ) {
+			len = tx_array[packets_done].len;
+			do {
+				tx_desc = xsk_ring_prod__tx_desc(&xsk->tx, idx + i);
+				assert(tx_desc != NULL);
+				tx_desc->addr = CONVERT_TO_RELATIVE_ADDRESS(tx_array[packets_done].addr);
+				if (__glibc_unlikely(len > opt_xsk_frame_size)) {
+					tx_desc->len = opt_xsk_frame_size;
+					tx_desc->options = XDP_PKT_CONTD;
+					len -= tx_desc->len;
+				} else {
+					tx_desc->len = len;
+					tx_desc->options = 0;
+					// xsk->ring_stats.tx_npkts++;
+					packets_done++;
+					len = 0; // Ensure the loop exits when the entire packet is processed.
+				}
+				
+				i++;
+			} while (len > 0); // Ensure we do not exceed the batch size.
+		}
+		xsk_ring_prod__submit(&xsk->tx, nb);
+		xsk_ring_cons__release(&xsk->rx, nb);
+		xsk->outstanding_tx += nb;
+		
+	}
+
 return 0;
 
 }
@@ -1173,29 +1160,18 @@ void final_cleanup(){
 	}
 }
 
- int x=0;
 
-XDP_ALWAYS_INLINE
-struct packet_desc
-swap_mac_addresses(struct packet_desc data,
-                   const size_t data_offset)
+XDP_ALWAYS_INLINE struct packet_desc swap_mac_addresses(struct packet_desc data,
+                   										const size_t data_offset)
 {
     struct ether_header *eth;
 	struct ether_addr tmp;
-	struct iphdr *ipv4_hdr;
-	struct udphdr *udp_hdr;
+	// struct iphdr *ipv4_hdr;
 	uint8_t *payload;
 
 	eth = (struct ether_header *)data.addr;
-	ipv4_hdr = (struct iphdr *)((uint8_t*)eth + sizeof(*eth));
-	udp_hdr = (struct udphdr *)((uint8_t*)ipv4_hdr + sizeof(*ipv4_hdr));
-	//  x++;
-	//     if (x%10000 == 0) {
-    //     // Handle error for packet size being too small
-    //     // This could be returning an error code, logging an error, etc.
-	// 	printf("len = %d\n", data.len);
-    //      // Exit the function or handle the error appropriately
-    // }
+	// ipv4_hdr = (struct iphdr *)((uint8_t*)eth + sizeof(*eth));
+	// udp_hdr = (struct udphdr *)((uint8_t*)ipv4_hdr + sizeof(*ipv4_hdr));
    
     // Swap source and destination MAC addresses directly
     tmp = *(struct ether_addr *)&eth->ether_shost;
@@ -1211,63 +1187,7 @@ swap_mac_addresses(struct packet_desc data,
 
     // Replace the second integer with the first integer
     *second_int = *first_int;
-	
-		    // if (x%10000 == 0) {
-        // Handle error for packet size being too small
-        // This could be returning an error code, logging an error, etc.
-		// printf("len = %d\n", data.len);
-         // Exit the function or handle the error appropriately
-    // }
-
-	// compute_udp_checksum(ipv4_hdr, udp_hdr);
-	// compute_ip_checksum(ipv4_hdr);
 
     return data;
 }
-
-
-
-// Assuming struct packet_desc is defined elsewhere
-// and includes a member `size` that represents the total packet size.
-
-// XDP_ALWAYS_INLINE struct packet_desc swap_mac_addresses(struct packet_desc data, const size_t data_offset) {
-//     // Define the minimum required size for a packet to be valid
-//     // Ethernet header (14 bytes) + IP header (20 bytes, for a header without options) 
-//     // + UDP header (8 bytes)
-//     const size_t min_packet_size = sizeof(struct ether_header) + sizeof(struct iphdr) + sizeof(struct udphdr);
-	
-//     // Check if the packet is at least large enough to contain the expected headers
-
-
-//     struct ether_header *eth;
-//     struct ether_addr tmp;
-//     struct iphdr *ipv4_hdr;
-//     struct udphdr *udp_hdr;
-//     uint8_t *payload;
-
-//     eth = (struct ether_header *)data.addr;
-//     ipv4_hdr = (struct iphdr *)((uint8_t*)eth + sizeof(*eth));
-//     udp_hdr = (struct udphdr *)((uint8_t*)ipv4_hdr + sizeof(*ipv4_hdr));
-
-//     // Swap source and destination MAC addresses directly
-//     tmp = *(struct ether_addr *)&eth->ether_shost;
-//     *(struct ether_addr *)&eth->ether_shost = *(struct ether_addr *)&eth->ether_dhost;
-//     *(struct ether_addr *)&eth->ether_dhost = tmp;
-
-//     // Now, access the first and second integers in the data segment
-//     // The first integer is right after the headers, the second follows immediately
-//     payload = (uint8_t*)(data.addr + data_offset);
-
-//     uint32_t *first_int = (uint32_t*)payload;
-//     uint32_t *second_int = (uint32_t*)(payload + sizeof(uint32_t));
-
-//     // Replace the second integer with the first integer
-//     *second_int = *first_int;
-
-//     // compute_udp_checksum(ipv4_hdr, udp_hdr);
-//     // compute_ip_checksum(ipv4_hdr);
-
-//     // Return data or modify the function signature as necessary to handle the changes appropriately
-// }
-
 

@@ -106,7 +106,7 @@ void msleep(long milliseconds) {
 }
 #include <stdio.h>
 #include <time.h>
-int sum_of_pkt =0;
+bool do_pooling = false;
 void work(void* args) {
     int* xsk_id = (int*)args;
     struct packet_desc pkt_desc_array_rx[PKT_ARRAY_SIZE];
@@ -115,9 +115,9 @@ void work(void* args) {
     int i; 
     struct pollfd fds[2];
 	int nfds = 1;
-    struct timespec ts;
-    ts.tv_sec = 0;
-    ts.tv_nsec = 10 * 1; // 500 million nanoseconds
+    // struct timespec ts;
+    // ts.tv_sec = 0;
+    // ts.tv_nsec = 10 * 1; // 500 million nanoseconds
     
 
         // Define the sizes of the headers
@@ -134,36 +134,31 @@ void work(void* args) {
     
     
     while(__glibc_likely(1)) {
-        poll(fds, nfds, -1);
+        
         
         pkt_cnt = fill_rx_array(*xsk_id, pkt_desc_array_rx, PKT_ARRAY_SIZE);
 
         if (!pkt_cnt) {
             // nanosleep(&sleeptime, NULL); // Sleep for the defined period
+            if(do_pooling) poll(fds, nfds, -1);
             continue;
         }
 
         // Process packets
         for (i = 0; i < pkt_cnt; i++) {
-            // fibonacci(15);
+            fibonacci(10);
             pkt_desc_array_tx[i] = swap_mac_addresses(pkt_desc_array_rx[i], data_offset);
         }
-        sum_of_pkt += pkt_cnt;
 
-
-
-    // // Call nanosleep
-    // if (nanosleep(&ts, NULL) < 0) {
-    //     perror("nanosleep failed");
-    // }
         send_tx_array(*xsk_id, pkt_desc_array_tx, pkt_cnt);
-        // dump_app_stats(1000000);
     }
 }
+
 
 int main(int argc, char** argv)
 {    
     int number_of_sockets = atoi(argv[1]);
+    do_pooling = atoi(argv[2]) == 1 ? true : false;
     printf("%s\n", argv[1]);
     printf("%d\n", number_of_sockets);
     char* interface_name = "enp6s0f1";
@@ -192,9 +187,6 @@ int main(int argc, char** argv)
     for(int i=0; i<number_of_sockets; i++){
         pthread_join(threads[i], NULL);
     }
-    printf("\n packet count = %d\n",sum_of_pkt);
-    printf("\n tx sum = %d\n",tx_sum);
-    printf("\n x = %d\n",x);
 
     final_cleanup();
     return 0;
