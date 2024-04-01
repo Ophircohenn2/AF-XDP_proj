@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
+
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
-#include "xdpsock.h"
+#define MAX_SOCKS 32
+typedef unsigned int __uint;
 
 
 //debug function that allow us to print variables to the kernel log
@@ -19,7 +21,7 @@ struct {
 	__uint(value_size, sizeof(int));
 } xsks_map SEC(".maps");
 
-static u32 index = 0;
+static __uint index = 0;
 SEC("xdp_sock")
 int xdp_sock_prog(struct xdp_md *ctx)
 {

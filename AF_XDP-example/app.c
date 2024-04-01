@@ -1,5 +1,5 @@
+
 #include "xdpsock.c"
-#include "xdpsock.h"
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <linux/if_link.h>
@@ -12,11 +12,17 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+#include <stdbool.h>
 
 #define PKT_ARRAY_SIZE opt_batch_size
 #define FIBONACCI_WORKLOAD 10
 
-bool do_pooling = false;
+
+typedef __u64 u64;
+typedef __u32 u32;
+typedef __u16 u16;
+
+bool do_polling = false;
 
 inline int fibonacci(int n) {
     if (n <= 1)
@@ -111,8 +117,7 @@ void work(void* args) {
     struct packet_desc pkt_desc_array_tx[PKT_ARRAY_SIZE];
     int pkt_cnt;
     int i; 
-    struct pollfd fds[2];
-	int nfds = 1;
+
 
     // Define the sizes of the headers
     const size_t eth_header_size = sizeof(struct ether_header); // Ethernet header size
@@ -122,16 +127,12 @@ void work(void* args) {
     // Calculate the offset to the data segment after Ethernet, IP, and UDP headers
     const size_t data_offset = eth_header_size + ip_header_size + udp_header_size;
 
-	memset(fds, 0, sizeof(fds));
-	fds[0].fd = xsk_socket__fd(xsks[*xsk_id]->xsk);
-	fds[0].events = POLLIN;
     
     
     while(__glibc_likely(1)) {
-        pkt_cnt = fill_rx_array(*xsk_id, pkt_desc_array_rx, PKT_ARRAY_SIZE);
+        pkt_cnt = fill_rx_array(*xsk_id, pkt_desc_array_rx, PKT_ARRAY_SIZE, do_polling);
 
         if (!pkt_cnt) {
-            if(do_pooling) poll(fds, nfds, -1);
             continue;
         }
 
@@ -150,7 +151,7 @@ int main(int argc, char** argv)
 {    
     char* interface_name = argv[1];
     int number_of_sockets = atoi(argv[2]);
-    do_pooling = atoi(argv[3]) == 1 ? true : false;
+    do_polling = atoi(argv[3]) == 1 ? true : false;
 
     printf("interface name: %s\n", interface_name);
     printf("number_of_sockets %d\n", number_of_sockets);

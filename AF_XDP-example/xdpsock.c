@@ -1,46 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /* Copyright(c) 2017 - 2022 Intel Corporation. */
 
-#include <errno.h>
-#include <getopt.h>
-#include <libgen.h>
-#include <linux/bpf.h>
-#include <linux/err.h>
-#include <linux/if_link.h>
-#include <linux/if_xdp.h>
-#include <linux/if_ether.h>
-#include <linux/ip.h>
-#include <linux/limits.h>
-#include <linux/udp.h>
-#include <arpa/inet.h>
-#include <locale.h>
-#include <net/ethernet.h>
-#include <netinet/ether.h>
-#include <net/if.h>
-#include <poll.h>
-#include <pthread.h>
-#include <signal.h>
-#include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/capability.h>
-#include <sys/mman.h>
-#include <sys/resource.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/un.h>
-#include <time.h>
-#include <unistd.h>
-#include <sched.h>
-#include <assert.h>
 
-#include <xdp/xsk.h>
-#include <xdp/libxdp.h>
-
-#include <bpf/libbpf.h>
-#include <bpf/bpf.h>
-#include <stdatomic.h>
 #include "xdpsock.h"
 
 #include "packet-checksum.h"
@@ -127,10 +88,12 @@ static int opt_ifindex;
 static unsigned long opt_duration;
 static unsigned long start_time;
 bool benchmark_done = false;
+
+
 u32 opt_batch_size = 64;
+u32 opt_num_xsks = 1; //should be overwritten by the app
 
 static u16 opt_pkt_size = MIN_PKT_SIZE;
-
 static bool opt_extra_stats;
 static bool opt_quiet = true; //print stats to terminal
 static bool opt_app_stats;
@@ -144,7 +107,7 @@ static int opt_mmap_flags;
 int opt_xsk_frame_size = OUR_XDP_FRAME_SIZE;
 static int frames_per_pkt;
 bool opt_need_wakeup = true;
-static u32 opt_num_xsks = 1;
+
 static clockid_t opt_clock = CLOCK_MONOTONIC;
 static unsigned long opt_tx_cycle_ns;
 static int opt_schpolicy = SCHED_OTHER;
@@ -164,99 +127,6 @@ int sock;
 pthread_t pt;
 void *bufs;
 
-struct vlan_ethhdr {
-	unsigned char h_dest[6];
-	unsigned char h_source[6];
-	__be16 h_vlan_proto;
-	__be16 h_vlan_TCI;
-	__be16 h_vlan_encapsulated_proto;
-};
-
-struct xsk_ring_stats {
-	unsigned long rx_frags;
-	unsigned long rx_npkts;
-	unsigned long tx_frags;
-	unsigned long tx_npkts;
-	unsigned long rx_dropped_npkts;
-	unsigned long rx_invalid_npkts;
-	unsigned long tx_invalid_npkts;
-	unsigned long rx_full_npkts;
-	unsigned long rx_fill_empty_npkts;
-	unsigned long tx_empty_npkts;
-	unsigned long prev_rx_frags;
-	unsigned long prev_rx_npkts;
-	unsigned long prev_tx_frags;
-	unsigned long prev_tx_npkts;
-	unsigned long prev_rx_dropped_npkts;
-	unsigned long prev_rx_invalid_npkts;
-	unsigned long prev_tx_invalid_npkts;
-	unsigned long prev_rx_full_npkts;
-	unsigned long prev_rx_fill_empty_npkts;
-	unsigned long prev_tx_empty_npkts;
-};
-
-struct xsk_driver_stats {
-	unsigned long intrs;
-	unsigned long prev_intrs;
-};
-
-struct xsk_app_stats {
-	unsigned long rx_empty_polls;
-	unsigned long fill_fail_polls;
-	unsigned long copy_tx_sendtos;
-	unsigned long tx_wakeup_sendtos;
-	unsigned long opt_polls;
-	unsigned long prev_rx_empty_polls;
-	unsigned long prev_fill_fail_polls;
-	unsigned long prev_copy_tx_sendtos;
-	unsigned long prev_tx_wakeup_sendtos;
-	unsigned long prev_opt_polls;
-};
-
-struct xsk_umem_info {
-	struct xsk_ring_prod fq;
-	struct xsk_ring_cons cq;
-	struct xsk_umem *umem;
-	void *buffer;
-};
-
-struct xsk_socket_info {
-	struct xsk_ring_cons rx;
-	struct xsk_ring_prod tx;
-	struct xsk_umem_info *umem;
-	struct xsk_socket *xsk;
-	struct xsk_ring_stats ring_stats;
-	struct xsk_app_stats app_stats;
-	struct xsk_driver_stats drv_stats;
-	u32 outstanding_tx;
-};
-
-static const struct clockid_map {
-	const char *name;
-	clockid_t clockid;
-} clockids_map[] = {
-	{ "REALTIME", CLOCK_REALTIME },
-	{ "TAI", CLOCK_TAI },
-	{ "BOOTTIME", CLOCK_BOOTTIME },
-	{ "MONOTONIC", CLOCK_MONOTONIC },
-	{ NULL }
-};
-
-static const struct sched_map {
-	const char *name;
-	int policy;
-} schmap[] = {
-	{ "OTHER", SCHED_OTHER },
-	{ "FIFO", SCHED_FIFO },
-	{ NULL }
-};
-
-struct packet_desc
-{
-    u64 addr;
-    u32 len;
-    u32 option;
-};
 
 static unsigned long get_nsecs(void)
 {
@@ -614,7 +484,7 @@ void xdp_exit(void) {
 }
 
 
-static void int_exit(int sig)
+void int_exit(int sig)
 {
 	benchmark_done = true;
 	xdp_exit();
@@ -746,7 +616,7 @@ static struct xsk_socket_info *xsk_configure_socket(struct xsk_umem_info *umem,
 	return xsk;
 }
 
-static inline void kick_tx(struct xsk_socket_info *xsk)
+inline void kick_tx(struct xsk_socket_info *xsk)
 {
 	int ret;
 	ret = sendto(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, 0);
@@ -757,7 +627,7 @@ static inline void kick_tx(struct xsk_socket_info *xsk)
 	exit_with_error(errno);
 }
 
-static inline void complete_tx_release_rx(struct xsk_socket_info *xsk)
+inline void complete_tx_release_rx(struct xsk_socket_info *xsk)
 {
 	struct xsk_umem_info *umem = xsk->umem;
 	u32 idx_cq = 0, idx_fq = 0;
@@ -940,13 +810,16 @@ static void apply_setsockopt(struct xsk_socket_info *xsk)
 		exit_with_error(errno);
 }
 
-static inline  u16 fill_rx_array(u16 xsk_id, 
+inline  u16 fill_rx_array(u16 xsk_id, 
 						  struct packet_desc *rx_array,
-						  u16 array_size) 
+						  u16 array_size,
+						  bool polling_flag) 
 {
     unsigned int rcvd, i;
     u32 idx_rx = 0;
 	struct xsk_socket_info *xsk = xsks[xsk_id];
+
+
     // Peek into the receive ring buffer to check the number of received packets
 	complete_tx_release_rx(xsk);
     rcvd = xsk_ring_cons__peek(&xsk->rx, opt_batch_size, &idx_rx);
@@ -956,6 +829,7 @@ static inline  u16 fill_rx_array(u16 xsk_id,
             xsk->app_stats.rx_empty_polls++;
             recvfrom(xsk_socket__fd(xsk->xsk), NULL, 0, MSG_DONTWAIT, NULL, NULL); // Read 0 bits from fd to null
         }
+		if(polling_flag) poll(xsk->polling_fds, 1, -1);
 	}
 
     // Process each packet and populate the provided array
@@ -975,7 +849,7 @@ static inline  u16 fill_rx_array(u16 xsk_id,
 }
 
 
-static inline  void release_rx(u16 xsk_id, u32 done_packets,
+inline  void release_rx(u16 xsk_id, u32 done_packets,
 						struct packet_desc* pkt_array) 
 {
 	unsigned int rcvd, i;
@@ -1004,7 +878,7 @@ static inline  void release_rx(u16 xsk_id, u32 done_packets,
 }
 
 
-static inline int send_tx_array(u32 xsk_idx, struct packet_desc *tx_array, u32 pkt_cnt) {
+inline int send_tx_array(u32 xsk_idx, struct packet_desc *tx_array, u32 pkt_cnt) {
 
 	u32 packets_done = 0;
 	struct xsk_socket_info *xsk = xsks[xsk_idx];
@@ -1114,8 +988,10 @@ void xdp_init_thread(int number_of_sockets, char* interface_name, int thread_id)
 
 	setlocale(LC_ALL, "");
 
-	prev_time = get_nsecs();
-	start_time = prev_time;
+
+	memset(xsks[thread_id]->polling_fds, 0, sizeof(xsks[thread_id]->polling_fds));
+	xsks[thread_id]->polling_fds[0].fd = xsk_socket__fd(xsks[thread_id]->xsk);
+	xsks[thread_id]->polling_fds[0].events = POLLIN;
 
 	/* Configure sched priority for better wake-up accuracy */
 	memset(&schparam, 0, sizeof(schparam));
@@ -1139,7 +1015,7 @@ void final_cleanup(){
 }
 
 
-static inline struct packet_desc swap_mac_addresses(struct packet_desc data,
+inline struct packet_desc swap_mac_addresses(struct packet_desc data,
                    							 const size_t data_offset)
 {
     struct ether_header *eth;
